@@ -1,13 +1,20 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 
-from auton_survival.preprocessing import Preprocessor
+from scipy.integrate import trapz
+
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
-from scipy.integrate import trapz
+
+from auton_survival.preprocessing import Preprocessor
+from auton_survival.models.dsm import DeepSurvivalMachines
+from auton_survival.models.dcm import DeepCoxMixtures
+from auton_survival.models.dcm.dcm_utilities import test_step
+
 
 def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv") -> pd.DataFrame:
     """
@@ -85,6 +92,124 @@ def processing_data_2_DCM(df: pd.DataFrame,
             numerical_features_list]
 
 
+class DSM_Wrapper(object):
+    """
+    A wrapper for DSM model
+    """
+    def __init__(self, params_grid):
+        """
+        Initialization
+        :param params_grid: parameters grid for DSM
+        """
+        self.params_grid = params_grid
+        self.model = None
+
+    def fit(self, train_set, val_set):
+        """
+        Fit the model
+        :param train_set: training set
+        :param val_set: validation set
+        :return:
+        """
+        models = []
+        x_train, t_train, e_train = train_set
+        x_val, t_val, e_val = val_set
+        for param in self.params_grid:
+            model = DeepSurvivalMachines(k=param["k"],
+                                 distribution=param["distribution"],
+                                 layers=param["layers"],)
+
+            model.fit(x_train, t_train, e_train,
+                      iters=param["iters"],
+                      learning_rate=param["learning_rate"])
+            models.append([model.compute_nll(x_val, t_val, e_val), model])
+
+        best_model_entry = min(models, key=lambda x: x[0])
+
+        # Extract the model
+        self.model = best_model_entry[1]
+
+    def predict(self, test_set, times):
+        """
+        Predict survival probability and risk
+        :param test_set: test set
+        :param times: times to predict
+        :return: survival probability, risk
+        """
+        x_test, t_test, e_test = test_set
+
+        out_survival = self.model.predict_survival(x_test, times)
+        out_risk = 1 - out_survival
+
+        return out_survival, out_risk
+
+class DCM_Wrapper(object):
+    """
+    A wrapper for DCM model
+    """
+    def __init__(self, params_grid):
+        """
+        Initialization
+        :param params_grid: parameters grid for DCM
+        """
+        self.params_grid = params_grid
+        self.model = None
+
+    def fit(self, train_set, val_set):
+        """
+        Fit the model
+        :param train_set: training set
+        :param val_set: validation set
+        :return:
+        """
+
+        def dataframe_to_tensor(data):
+            """Function that converts a pandas dataframe into a tensor"""
+            if isinstance(data, (pd.Series, pd.DataFrame)):
+                data =  data.to_numpy()
+                return torch.from_numpy(data).float()
+            else:
+                return torch.from_numpy(data).float()
+
+        x_train, t_train, e_train = train_set
+        x_val, t_val, e_val = val_set
+        x_val_tensor = dataframe_to_tensor(x_val)
+        t_val_tensor = dataframe_to_tensor(t_val)
+        e_val_tensor = dataframe_to_tensor(e_val)
+
+        models = []
+        for param in self.params_grid:
+            model = DeepCoxMixtures(k=param["k"],
+                                    layers=param["layers"])
+            # The fit method is called to train the model
+            model.fit(x_train, t_train, e_train,
+                      iters=param["iters"],
+                      learning_rate=param["learning_rate"]
+                      )
+
+            # store the performance on the validation set
+            breslow_splines = model.torch_model[1]
+            val_result = test_step(model.torch_model[0], x_val_tensor, t_val_tensor, e_val_tensor, breslow_splines)
+            models.append([[val_result, model]])
+
+        best_model = min(models)
+        self.model = best_model[0][1]
+
+    def predict(self, test_set, times):
+        """
+        Predict survival probability and risk
+        :param test_set: test set
+        :param times: times to predict
+        :return: survival probability, risk
+        """
+        x_test, t_test, e_test = test_set
+
+        out_survival = self.model.predict_survival(x_test, times)
+        out_risk = 1 - out_survival
+
+        return out_survival, out_risk
+
+
 def compute_PS_and_IPTW(df: pd.DataFrame,
                         covariates: list,
                         treatment: str,
@@ -115,7 +240,7 @@ def compute_PS_and_IPTW(df: pd.DataFrame,
 
     return df_ps
 
-def plot_DCM_avg_survival_curve(df_ps: pd.DataFrame,
+def plot_DCM_avg_survival_curve(df: pd.DataFrame,
                                 group_index: np.ndarray,
                                 model,
                                 covariates: list,
@@ -123,7 +248,7 @@ def plot_DCM_avg_survival_curve(df_ps: pd.DataFrame,
                                 figsize: tuple=(10, 10)):
     """
     plot the average survival curve for the DCM based on the group
-    :param df: dataframe with PS and IPTW
+    :param df: dataframe of all data
     :param group_index: index of the group
     :param model: the DCM model
     :param covariates: list of covariates exclude the treatment
@@ -141,7 +266,7 @@ def plot_DCM_avg_survival_curve(df_ps: pd.DataFrame,
 
     for i in range(0, num_group):
         # find all data in selected group
-        df_group = df_ps[group_index == i]
+        df_group = df[group_index == i]
         df_treated = df_group[df_group[treatment] == 1]
         df_untreated = df_group[df_group[treatment] == 0]
 
@@ -165,7 +290,7 @@ def plot_DCM_avg_survival_curve(df_ps: pd.DataFrame,
         plt.ylabel("Average Survival Probability")
 
         # Final plot settings
-        plt.title(f"IPTW-Adjusted Survival Curves (Treated vs Untreated) for group {i}")
+        plt.title(f"Survival Curves (Treated vs Untreated) for group {i}")
         plt.xlabel("Time Since ICU Admission (minutes)")
         plt.ylabel("Survival Probability")
 
