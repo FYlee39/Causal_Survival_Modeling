@@ -9,6 +9,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
+from sklearn.cluster import KMeans
+
+from lifelines import CoxPHFitter
 
 from auton_survival.preprocessing import Preprocessor
 from auton_survival.models.dsm import DeepSurvivalMachines
@@ -40,6 +43,25 @@ def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged
     cleaned_df["event"] = (cleaned_df['event'] == 'Expired').astype(int)
 
     return cleaned_df
+
+
+def clustering_data(df: pd.DataFrame,
+                    n_clusters,
+                    features: list,
+                    random_seed=42) -> pd.DataFrame:
+    """
+    Clustering data according to the designated features
+    :param df: data frame
+    :param n_clusters: number of clusters
+    :param features: features used to cluster
+    :return: new data frame with cluster number
+    """
+    X = df[features]
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_seed)
+    df["cluster index"] = kmeans.fit_predict(X)
+
+    return df
 
 
 def processing_data_2_DCM(df: pd.DataFrame,
@@ -143,6 +165,7 @@ class DSM_Wrapper(object):
 
         return out_survival, out_risk
 
+
 class DCM_Wrapper(object):
     """
     A wrapper for DCM model
@@ -210,6 +233,52 @@ class DCM_Wrapper(object):
         return out_survival, out_risk
 
 
+class Cox_Regression_Wrapper(object):
+    """A wrapper for Cox regression model"""
+    def __init__(self):
+        """
+        Initialization
+        """
+        self.model = None
+
+    def fit(self, train_set, val_set):
+        """
+        Fit the model
+        :param train_set: training set
+        :param val_set: validation set
+        :return:
+        """
+        models = []
+        train_df = pd.concat(train_set, axis=1)
+        test_df = pd.concat(val_set, axis=1)
+        whole_df = pd.concat([train_df, test_df], axis=0)
+
+        model = CoxPHFitter()
+
+        model.fit(whole_df,
+                  duration_col="time",
+                  event_col="event")
+
+
+        # Extract the model
+        self.model = model
+
+    def predict(self, test_set, times):
+        """
+        Predict survival probability and risk
+        :param test_set: test set
+        :param times: times to predict
+        :return: survival probability, risk
+        """
+        x_test, t_test, e_test = test_set
+        survival_curves = self.model.predict_survival_function(x_test)
+        out_survival = survival_curves.loc[times]
+
+        out_risk = 1 - out_survival
+
+        return out_survival, out_risk
+
+
 def compute_PS_and_IPTW(df: pd.DataFrame,
                         covariates: list,
                         treatment: str,
@@ -240,14 +309,15 @@ def compute_PS_and_IPTW(df: pd.DataFrame,
 
     return df_ps
 
-def plot_DCM_avg_survival_curve(df: pd.DataFrame,
+
+def plot_avg_survival_curve(df: pd.DataFrame,
                                 group_index: np.ndarray,
                                 model,
                                 covariates: list,
                                 treatment: str,
                                 figsize: tuple=(10, 10)):
     """
-    plot the average survival curve for the DCM based on the group
+    plot the average survival curve for the selected model based on the group
     :param df: dataframe of all data
     :param group_index: index of the group
     :param model: the DCM model
@@ -309,3 +379,4 @@ def plot_DCM_avg_survival_curve(df: pd.DataFrame,
     plt.show()
 
     return causal_effects
+
