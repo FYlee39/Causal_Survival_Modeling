@@ -19,6 +19,9 @@ from auton_survival.models.dcm import DeepCoxMixtures
 from auton_survival.models.dcm.dcm_utilities import test_step
 
 
+from sklearn.model_selection import ParameterGrid
+
+
 def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv") -> pd.DataFrame:
     """
     processed eICU data
@@ -114,7 +117,42 @@ def processing_data_2_DCM(df: pd.DataFrame,
             numerical_features_list]
 
 
-class DSM_Wrapper(object):
+class model_wrapper(object):
+    """
+    Base class for model wrappers
+    Must rewrite fit method
+    """
+    def __init__(self, params_grid=None):
+        """
+        Initialization
+        :param params_grid: parameters grid for model
+        """
+        self.params_grid = params_grid
+
+        self.model = None
+
+        self.fitted = False
+
+    def predict(self, x_test, times):
+        """
+        Predict survival probability and risk
+        :param x_test: test set
+        :param times: times to predict
+        :return: survival probability, risk
+        """
+        if self.fitted:
+            out_survival = self.model.predict_survival(x_test, times)
+            out_risk = 1 - out_survival
+
+            return out_survival, out_risk
+
+        else:
+
+            print("Model not fitted")
+            return
+
+
+class DSM_Wrapper(model_wrapper):
     """
     A wrapper for DSM model
     """
@@ -123,8 +161,8 @@ class DSM_Wrapper(object):
         Initialization
         :param params_grid: parameters grid for DSM
         """
-        self.params_grid = params_grid
-        self.model = None
+        super(DSM_Wrapper, self).__init__(params_grid)
+
 
     def fit(self, train_set, val_set):
         """
@@ -138,8 +176,8 @@ class DSM_Wrapper(object):
         x_val, t_val, e_val = val_set
         for param in self.params_grid:
             model = DeepSurvivalMachines(k=param["k"],
-                                 distribution=param["distribution"],
-                                 layers=param["layers"],)
+                                         distribution=param["distribution"],
+                                         layers=param["layers"],)
 
             model.fit(x_train, t_train, e_train,
                       iters=param["iters"],
@@ -150,23 +188,10 @@ class DSM_Wrapper(object):
 
         # Extract the model
         self.model = best_model_entry[1]
-
-    def predict(self, test_set, times):
-        """
-        Predict survival probability and risk
-        :param test_set: test set
-        :param times: times to predict
-        :return: survival probability, risk
-        """
-        x_test, t_test, e_test = test_set
-
-        out_survival = self.model.predict_survival(x_test, times)
-        out_risk = 1 - out_survival
-
-        return out_survival, out_risk
+        self.fitted = True
 
 
-class DCM_Wrapper(object):
+class DCM_Wrapper(model_wrapper):
     """
     A wrapper for DCM model
     """
@@ -175,8 +200,7 @@ class DCM_Wrapper(object):
         Initialization
         :param params_grid: parameters grid for DCM
         """
-        self.params_grid = params_grid
-        self.model = None
+        super(DCM_Wrapper, self).__init__(params_grid)
 
     def fit(self, train_set, val_set):
         """
@@ -217,29 +241,16 @@ class DCM_Wrapper(object):
 
         best_model = min(models)
         self.model = best_model[0][1]
-
-    def predict(self, test_set, times):
-        """
-        Predict survival probability and risk
-        :param test_set: test set
-        :param times: times to predict
-        :return: survival probability, risk
-        """
-        x_test, t_test, e_test = test_set
-
-        out_survival = self.model.predict_survival(x_test, times)
-        out_risk = 1 - out_survival
-
-        return out_survival, out_risk
+        self.fitted = True
 
 
-class Cox_Regression_Wrapper(object):
+class Cox_Regression_Wrapper(model_wrapper):
     """A wrapper for Cox regression model"""
     def __init__(self):
         """
         Initialization
         """
-        self.model = None
+        super(Cox_Regression_Wrapper, self).__init__()
 
     def fit(self, train_set, val_set):
         """
@@ -262,21 +273,27 @@ class Cox_Regression_Wrapper(object):
 
         # Extract the model
         self.model = model
+        self.fitted = True
 
-    def predict(self, test_set, times):
+    def predict(self, x_test, times):
         """
-        Predict survival probability and risk
-        :param test_set: test set
+        Rewrite predict function
+        :param x_test: test set
         :param times: times to predict
         :return: survival probability, risk
         """
-        x_test, t_test, e_test = test_set
-        survival_curves = self.model.predict_survival_function(x_test)
-        out_survival = survival_curves.loc[times]
 
-        out_risk = 1 - out_survival
+        surv_curves = self.model.predict_survival_function(x_test)
 
-        return out_survival, out_risk
+        # Transpose to align time along columns for interpolation
+        interpolated = surv_curves.T.interpolate(method='index', axis=1)
+
+        # Interpolate to custom times
+        survival_at_times = interpolated.reindex(columns=times, method=None).interpolate(method='values', axis=1)
+
+        out_risk = 1 - survival_at_times
+
+        return survival_at_times, out_risk
 
 
 def compute_PS_and_IPTW(df: pd.DataFrame,
@@ -311,19 +328,22 @@ def compute_PS_and_IPTW(df: pd.DataFrame,
 
 
 def plot_avg_survival_curve(df: pd.DataFrame,
-                                group_index: np.ndarray,
-                                model,
-                                covariates: list,
-                                treatment: str,
-                                figsize: tuple=(10, 10)):
+                            group_index: np.ndarray,
+                            model_wrapper,
+                            covariates: list,
+                            treatment: str,
+                            figsize: tuple=(10, 10),
+                            num_time: int = 100,
+                            ):
     """
     plot the average survival curve for the selected model based on the group
     :param df: dataframe of all data
     :param group_index: index of the group
-    :param model: the DCM model
+    :param model_wrapper: the DCM model
     :param covariates: list of covariates exclude the treatment
     :param treatment: name of the treatment column
     :param figsize: default size of the figure
+    :param num_time: number of the time points in the plot
     :return: the estimated causal effect for three groups
     """
     # get the number of groups
@@ -341,13 +361,13 @@ def plot_avg_survival_curve(df: pd.DataFrame,
         df_untreated = df_group[df_group[treatment] == 0]
 
         # Compute AUC via trapezoidal rule
-        time_grid = list(np.linspace(0, np.max(df_group["time"]), 100))
+        time_grid = list(np.linspace(0, np.max(df_group["time"]), num_time))
 
         X_treated = df_treated[covariates + [treatment]]
         X_control = df_untreated[covariates + [treatment]]
 
-        S1 = model.predict_survival(X_treated, time_grid)
-        S0 = model.predict_survival(X_control, time_grid)
+        S1, _  = model_wrapper.predict(X_treated, time_grid)
+        S0, _ = model_wrapper.predict(X_control, time_grid)
 
         S1_avg = np.mean(S1, axis=0)
         S0_avg = np.mean(S0, axis=0)
@@ -380,3 +400,58 @@ def plot_avg_survival_curve(df: pd.DataFrame,
 
     return causal_effects
 
+if __name__ == '__main__':
+    RANDOM_SEED = 42
+
+    cleaned_df = processing_data(path="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv")
+
+    categorical_features = ["gender",
+                            "ethnicity",
+                            "admission_type",
+                            "has_COPD",
+                            "has_Diabetes",
+                            "has_Metastasis",
+                            "has_Sepsis_A41_9"]
+
+    X_data, t_data, e_data, categorical_features_list, numerical_features_list = (
+        processing_data_2_DCM(df=cleaned_df,
+                              categorical_features_list=categorical_features,
+                              train_test_val_size=(0.7, 0.2, 0.1),
+                              random_seed=RANDOM_SEED)
+    )
+    X_train, X_val, X_test = X_data
+    t_train, t_val, t_test = t_data
+    e_train, e_val, e_test = e_data
+
+    train_set = (X_train, t_train, e_train)
+    val_set = (X_val, t_val, e_val)
+    test_set = (X_test, t_test, e_test)
+
+    DSM_param_grid = {"distribution": ["Weibull"],
+                      "k": [3],
+                      "layers": [[50, 50]],
+                      "learning_rate": [1e-3],
+                      "iters": [100]
+                      }
+    DSM_params = ParameterGrid(DSM_param_grid)
+
+    # get the name of covariates exclude the treatment
+    covariates = list(X_train.columns.drop("treatment_1.0"))
+
+    df_ps = pd.concat([X_train, t_train, e_train], axis=1)
+    df_ps = compute_PS_and_IPTW(df=df_ps,
+                                covariates=covariates,
+                                treatment="treatment_1.0")
+
+    train_group = np.zeros(X_train.shape[0])
+
+    dsm_wrap = DSM_Wrapper(DSM_params)
+    dsm_wrap.fit(train_set=train_set, val_set=val_set)
+    dsm_model = dsm_wrap.model
+
+    dsm_causal_effects = plot_avg_survival_curve(df=df_ps,
+                                                 group_index=np.zeros_like(train_group),
+                                                 model_wrapper=dsm_wrap,
+                                                 covariates=covariates,
+                                                 treatment="treatment_1.0"
+                                                 )
