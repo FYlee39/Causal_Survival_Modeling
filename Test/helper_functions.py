@@ -22,107 +22,13 @@ from auton_survival.models.dcm.dcm_utilities import test_step
 from sklearn.model_selection import ParameterGrid
 
 
-def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv") -> pd.DataFrame:
-    """
-    processed eICU data
-    :param path: final_merged_dataset.csv path
-    :return: processed eICU data frame
-    """
-    eICU_data = pd.read_csv("C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv")
-    cleaned_df = eICU_data.copy()
-
-    # drop ids
-    cleaned_df.drop(["patientunitstayid"], inplace=True, axis=1)
-    cleaned_df.drop(["hospitalid"], inplace=True, axis=1)
-
-    # change the name of time, event and treatment variables
-
-    cleaned_df.rename(columns={"unitdischargeoffset": "time",
-                               "unitdischargestatus": "event",
-                               "has_Vasopressor": "treatment",},
-                      inplace=True)
-
-
-    cleaned_df["event"] = (cleaned_df['event'] == 'Expired').astype(int)
-
-    return cleaned_df
-
-
-def clustering_data(df: pd.DataFrame,
-                    n_clusters,
-                    features: list,
-                    random_seed=42) -> pd.DataFrame:
-    """
-    Clustering data according to the designated features
-    :param df: data frame
-    :param n_clusters: number of clusters
-    :param features: features used to cluster
-    :return: new data frame with cluster number
-    """
-    X = df[features]
-
-    kmeans = KMeans(n_clusters=n_clusters, random_state=random_seed)
-    df["cluster index"] = kmeans.fit_predict(X)
-
-    return df
-
-
-def processing_data_2_DCM(df: pd.DataFrame,
-                          categorical_features_list: list,
-                          train_test_val_size: tuple=(0.7, 0.2, 0.1),
-                          random_seed=42):
-    """
-    further processed the data to meet the requirements of DCM
-    :param df: processed eICU data frame
-    :param categorical_features_list: categorical features list
-    :param train_test_val_size: default train, test, validation proportion
-    :param random_seed: default random seed
-    :return:
-    """
-    treatment = df["treatment"]
-    time = df["time"]
-    event = df["event"]
-    outcomes = pd.concat([time, event], axis=1)
-    features = df.drop(["time", "event"], axis=1)  # include the treatment
-    numerical_features_list = list(features.columns.drop(categorical_features_list + ["treatment"]))
-
-    # process data for DCM
-    processed_features = Preprocessor().fit_transform(features,
-                                            cat_feats=categorical_features_list + ["treatment"],
-                                            num_feats=numerical_features_list)
-
-
-    # train test and val split
-    original_indices = np.arange(len(features))
-    X_train, X_val_test, y_train, y_val_test, idx_train, idx_val_test = train_test_split(
-        processed_features, outcomes, original_indices,
-        test_size=1 - train_test_val_size[0],
-        random_state=random_seed
-    )
-
-    X_val, X_test, y_val, y_test, idx_val, idx_test = train_test_split(
-        X_val_test, y_val_test, idx_val_test,
-        test_size=train_test_val_size[-2] / (train_test_val_size[-1] + train_test_val_size[-2]),
-        random_state=random_seed
-    )
-
-    t_train, e_train = y_train["time"], y_train["event"]
-    t_val, e_val = y_val["time"], y_val["event"]
-    t_test, e_test = y_test["time"], y_test["event"]
-
-    return [(X_train, X_val, X_test),
-            (t_train, t_val, t_test),
-            (e_train, e_val, e_test),
-            categorical_features_list,
-            numerical_features_list]
-
-
-class model_wrapper(object):
+class Model_Wrapper(object):
     """
     Base class for model wrappers
     Must rewrite fit method
     """
-    def __init__(self, params_grid=None):
+    def __init__(self,
+                 params_grid=None):
         """
         Initialization
         :param params_grid: parameters grid for model
@@ -132,6 +38,8 @@ class model_wrapper(object):
         self.model = None
 
         self.fitted = False
+
+        self.model_name = "Base Model"
 
     def predict(self, x_test, times):
         """
@@ -152,7 +60,7 @@ class model_wrapper(object):
             return
 
 
-class DSM_Wrapper(model_wrapper):
+class DSM_Wrapper(Model_Wrapper):
     """
     A wrapper for DSM model
     """
@@ -162,6 +70,8 @@ class DSM_Wrapper(model_wrapper):
         :param params_grid: parameters grid for DSM
         """
         super(DSM_Wrapper, self).__init__(params_grid)
+
+        self.model_name = "DSM Model"
 
 
     def fit(self, train_set, val_set):
@@ -191,7 +101,7 @@ class DSM_Wrapper(model_wrapper):
         self.fitted = True
 
 
-class DCM_Wrapper(model_wrapper):
+class DCM_Wrapper(Model_Wrapper):
     """
     A wrapper for DCM model
     """
@@ -201,6 +111,7 @@ class DCM_Wrapper(model_wrapper):
         :param params_grid: parameters grid for DCM
         """
         super(DCM_Wrapper, self).__init__(params_grid)
+        self.model_name = "DCM Model"
 
     def fit(self, train_set, val_set):
         """
@@ -244,13 +155,15 @@ class DCM_Wrapper(model_wrapper):
         self.fitted = True
 
 
-class Cox_Regression_Wrapper(model_wrapper):
+class Cox_Regression_Wrapper(Model_Wrapper):
     """A wrapper for Cox regression model"""
-    def __init__(self):
+    def __init__(self, params_grid):
         """
         Initialization
+        :param params_grid: parameters grid for Cox Regression
         """
-        super(Cox_Regression_Wrapper, self).__init__()
+        super(Cox_Regression_Wrapper, self).__init__(params_grid)
+        self.model_name = "Cox Regression Model"
 
     def fit(self, train_set, val_set):
         """
@@ -294,6 +207,151 @@ class Cox_Regression_Wrapper(model_wrapper):
         out_risk = 1 - survival_at_times
 
         return survival_at_times, out_risk
+
+
+model_dict = {"DSM Model": DSM_Wrapper,
+              "DCM Model": DCM_Wrapper,
+              "Cox Regression Model": Cox_Regression_Wrapper}
+
+
+def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv") -> pd.DataFrame:
+    """
+    processed eICU data
+    :param path: final_merged_dataset.csv path
+    :return: processed eICU data frame
+    """
+    eICU_data = pd.read_csv("C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv")
+    cleaned_df = eICU_data.copy()
+
+    # drop ids
+    cleaned_df.drop(["patientunitstayid"], inplace=True, axis=1)
+    cleaned_df.drop(["hospitalid"], inplace=True, axis=1)
+
+    # change the name of time, event and treatment variables
+
+    cleaned_df.rename(columns={"unitdischargeoffset": "time",
+                               "unitdischargestatus": "event",
+                               "has_Vasopressor": "treatment",},
+                      inplace=True)
+
+
+    cleaned_df["event"] = (cleaned_df['event'] == 'Expired').astype(int)
+
+    return cleaned_df
+
+
+def clustering_data(df: pd.DataFrame,
+                    n_clusters,
+                    features: list=None,
+                    random_seed=42) -> pd.DataFrame:
+    """
+    Clustering data according to the designated features
+    :param df: data frame
+    :param n_clusters: number of clusters
+    :param features: features used to cluster
+    :return: new data frame with cluster number
+    """
+    if features is None:
+        """Using all features except time and event"""
+
+        features = list(df.columns)
+        if "time" in features:
+            features.remove("time")
+        if "event" in features:
+            features.remove("event")
+
+    X = df[features]
+
+    kmeans = KMeans(n_clusters=n_clusters,
+                    random_state=random_seed,
+                    n_init="auto")
+    df["cluster index"] = kmeans.fit_predict(X)
+
+    return df
+
+
+def processing_data_2_DCM(df: pd.DataFrame,
+                          categorical_features_list: list,
+                          train_test_val_size: tuple=(0.7, 0.2, 0.1),
+                          random_seed=42,
+                          clustering=False,
+                          n_clusters: int=1,
+                          clustering_features: list=None):
+    """
+    further processed the data to meet the requirements of DCM
+    :param df: processed eICU data frame
+    :param categorical_features_list: categorical features list
+    :param train_test_val_size: default train, test, validation proportion
+    :param random_seed: default random seed
+    :param clustering: clustering index, default not to clustering
+    :param: n_clusters: number of clusters
+    :param clustering_features: features used to cluster
+    :return:
+    """
+
+    treatment = df["treatment"]
+    time = df["time"]
+    event = df["event"]
+    outcomes = pd.concat([time, event], axis=1)
+    features = df.drop(["time", "event"], axis=1)  # include the treatment
+    numerical_features_list = list(features.columns.drop(categorical_features_list + ["treatment"]))
+
+    # process data for DCM
+    processed_features = Preprocessor().fit_transform(features,
+                                            cat_feats=categorical_features_list + ["treatment"],
+                                            num_feats=numerical_features_list)
+
+
+    # train test and val split
+    original_indices = np.arange(len(features))
+    X_train, X_val_test, y_train, y_val_test, idx_train, idx_val_test = train_test_split(
+        processed_features, outcomes, original_indices,
+        test_size=1 - train_test_val_size[0],
+        random_state=random_seed
+    )
+
+    X_val, X_test, y_val, y_test, idx_val, idx_test = train_test_split(
+        X_val_test, y_val_test, idx_val_test,
+        test_size=train_test_val_size[-2] / (train_test_val_size[-1] + train_test_val_size[-2]),
+        random_state=random_seed
+    )
+
+    t_train, e_train = y_train["time"], y_train["event"]
+    t_val, e_val = y_val["time"], y_val["event"]
+    t_test, e_test = y_test["time"], y_test["event"]
+
+    if clustering:
+        if n_clusters <= 1:
+            print("WARNING: n_clusters should be greater than 1")
+        else:
+
+            clustering_df = pd.concat([X_train, X_val, X_test], axis=0)
+
+            clustering_df = clustering_data(df=clustering_df,
+                                 n_clusters=n_clusters,
+                                 features=clustering_features,
+                                 random_seed=random_seed)
+
+            cluster_index = clustering_df["cluster index"]
+
+            # add clustering index to the data
+            X_train = pd.concat([X_train, cluster_index[idx_train]], axis=1)
+            X_val = pd.concat([X_val, cluster_index[idx_val]], axis=1)
+            X_test = pd.concat([X_test, cluster_index[idx_test]], axis=1)
+
+            t_train = pd.concat([t_train, cluster_index[idx_train]], axis=1)
+            t_val = pd.concat([t_val, cluster_index[idx_val]], axis=1)
+            t_test = pd.concat([t_test, cluster_index[idx_test]], axis=1)
+
+            e_train = pd.concat([e_train, cluster_index[idx_train]], axis=1)
+            e_val = pd.concat([e_val, cluster_index[idx_val]], axis=1)
+            e_test = pd.concat([e_test, cluster_index[idx_test]], axis=1)
+
+    return [(X_train, X_val, X_test),
+            (t_train, t_val, t_test),
+            (e_train, e_val, e_test),
+            categorical_features_list,
+            numerical_features_list]
 
 
 def compute_PS_and_IPTW(df: pd.DataFrame,
@@ -400,58 +458,46 @@ def plot_avg_survival_curve(df: pd.DataFrame,
 
     return causal_effects
 
+
+def clustering_fit_model(model_name: str,
+                         params_grid,
+                         train_set: pd.DataFrame,
+                         val_set: pd.DataFrame,
+                         ):
+    """
+    Fit the models based one different clusters
+    :param model_name: the name of the model
+    :param params_grid: parameters grid for model
+    :param train_set: training data
+    :param val_set: validation data
+    :return: list of model wrappers
+    """
+    if model_name not in model_dict.keys():
+        raise KeyError(f"Model {model_name} is not available")
+
+    model_wrapper = model_dict[model_name]
+
+    if "cluster index" not in train_set[0] or "cluster index" not in val_set[0]:
+        raise KeyError(f"Training or validation data frame has no clusters, please run 'clustering_data' first")
+
+    # extract the number of clusters
+    n_clusters = np.unique([train_set[0]["cluster index"].unique(),
+                            val_set[0]["cluster index"].unique()])
+
+    model_wrapper_list = []
+
+    for i in range(0, len(n_clusters)):
+
+        new_train_set = [data[train_set[0]["cluster index"] == i].drop("cluster index", axis=1).squeeze() for data in train_set]
+        new_val_set = [data[val_set[0]["cluster index"] == i].drop("cluster index", axis=1).squeeze() for data in val_set]
+
+        model = model_wrapper(params_grid=params_grid)
+        model.fit(train_set=new_train_set,
+                  val_set=new_val_set)
+        model_wrapper_list.append(model)
+
+    return model_wrapper_list
+
+
 if __name__ == '__main__':
-    RANDOM_SEED = 42
-
-    cleaned_df = processing_data(path="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv")
-
-    categorical_features = ["gender",
-                            "ethnicity",
-                            "admission_type",
-                            "has_COPD",
-                            "has_Diabetes",
-                            "has_Metastasis",
-                            "has_Sepsis_A41_9"]
-
-    X_data, t_data, e_data, categorical_features_list, numerical_features_list = (
-        processing_data_2_DCM(df=cleaned_df,
-                              categorical_features_list=categorical_features,
-                              train_test_val_size=(0.7, 0.2, 0.1),
-                              random_seed=RANDOM_SEED)
-    )
-    X_train, X_val, X_test = X_data
-    t_train, t_val, t_test = t_data
-    e_train, e_val, e_test = e_data
-
-    train_set = (X_train, t_train, e_train)
-    val_set = (X_val, t_val, e_val)
-    test_set = (X_test, t_test, e_test)
-
-    DSM_param_grid = {"distribution": ["Weibull"],
-                      "k": [3],
-                      "layers": [[50, 50]],
-                      "learning_rate": [1e-3],
-                      "iters": [100]
-                      }
-    DSM_params = ParameterGrid(DSM_param_grid)
-
-    # get the name of covariates exclude the treatment
-    covariates = list(X_train.columns.drop("treatment_1.0"))
-
-    df_ps = pd.concat([X_train, t_train, e_train], axis=1)
-    df_ps = compute_PS_and_IPTW(df=df_ps,
-                                covariates=covariates,
-                                treatment="treatment_1.0")
-
-    train_group = np.zeros(X_train.shape[0])
-
-    dsm_wrap = DSM_Wrapper(DSM_params)
-    dsm_wrap.fit(train_set=train_set, val_set=val_set)
-    dsm_model = dsm_wrap.model
-
-    dsm_causal_effects = plot_avg_survival_curve(df=df_ps,
-                                                 group_index=np.zeros_like(train_group),
-                                                 model_wrapper=dsm_wrap,
-                                                 covariates=covariates,
-                                                 treatment="treatment_1.0"
-                                                 )
+    pass
