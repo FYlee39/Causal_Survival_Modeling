@@ -1,0 +1,144 @@
+{
+    "num_replicates": 200,
+    "num_groups_list": [
+        3
+    ],
+    "num_sample": 2000,
+    "censor_rate": 0.3,
+    "models_list": [
+        "DCM Model",
+        "DCM IPTW Model",
+        "DSM IPTW Model",
+        "DSM Model",
+        "Cox Regression Model",
+        "Cox IPTW Model",
+        "RSF Model",
+        "RSF IPTW Model",
+        "AFT Model",
+        "AFT IPTW Model"
+    ],
+    "params_grids": {
+        "DCM Model": {
+            "k": [
+                3
+            ],
+            "layers": [
+                [
+                    64,
+                    64,
+                    64,
+                    64
+                ]
+            ],
+            "iters": [
+                200
+            ],
+            "learning_rate": [
+                0.0001
+            ]
+        },
+        "DCM IPTW Model": {
+            "k": [
+                3
+            ],
+            "layers": [
+                [
+                    64,
+                    64,
+                    64,
+                    64
+                ]
+            ],
+            "iters": [
+                200
+            ],
+            "learning_rate": [
+                0.0001
+            ]
+        },
+        "DSM Model": {
+            "k": [
+                3
+            ],
+            "distribution": [
+                "Weibull"
+            ],
+            "layers": [
+                [
+                    64,
+                    64,
+                    64,
+                    64
+                ]
+            ],
+            "iters": [
+                200
+            ],
+            "learning_rate": [
+                0.0001
+            ]
+        },
+        "DSM IPTW Model": {
+            "k": [
+                3
+            ],
+            "distribution": [
+                "Weibull"
+            ],
+            "layers": [
+                [
+                    64,
+                    64,
+                    64,
+                    64
+                ]
+            ],
+            "iters": [
+                200
+            ],
+            "learning_rate": [
+                0.0001
+            ]
+        },
+        "Cox Regression Model": {
+            "penalizer": [
+                0.0
+            ]
+        },
+        "Cox IPTW Model": {
+            "penalizer": [
+                0.0
+            ]
+        },
+        "RSF Model": {
+            "n_estimators": [
+                100
+            ],
+            "max_depth": [
+                5
+            ]
+        },
+        "RSF IPTW Model": {
+            "n_estimators": [
+                100
+            ],
+            "max_depth": [
+                5
+            ]
+        },
+        "AFT Model": {
+            "penalizer": [
+                0.0
+            ]
+        },
+        "AFT IPTW Model": {
+            "penalizer": [
+                0.0
+            ]
+        }
+    },
+    "random_seed_base": 0,
+    "fixed_param_seed": 0,
+    "num_worker": 20,
+    "train_test_val_size": null
+}
