@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
+import warnings
 
 from scipy.integrate import trapz
 
@@ -113,7 +114,7 @@ class DCM_Wrapper(Model_Wrapper):
         super(DCM_Wrapper, self).__init__(params_grid)
         self.model_name = "DCM Model"
 
-    def fit(self, train_set, val_set):
+    def fit(self, train_set, val_set=None):
         """
         Fit the model
         :param train_set: training set
@@ -130,7 +131,13 @@ class DCM_Wrapper(Model_Wrapper):
                 return torch.from_numpy(data).float()
 
         x_train, t_train, e_train = train_set
-        x_val, t_val, e_val = val_set
+
+        if val_set is None:
+            # use train set as the validation set
+            x_val, t_val, e_val = train_set
+        else:
+            x_val, t_val, e_val = val_set
+
         x_val_tensor = dataframe_to_tensor(x_val)
         t_val_tensor = dataframe_to_tensor(t_val)
         e_val_tensor = dataframe_to_tensor(e_val)
@@ -175,17 +182,18 @@ class Cox_Regression_Wrapper(Model_Wrapper):
         models = []
         train_df = pd.concat(train_set, axis=1)
         test_df = pd.concat(val_set, axis=1)
-        whole_df = pd.concat([train_df, test_df], axis=0)
 
-        model = CoxPHFitter()
+        for param in self.params_grid:
+            model = CoxPHFitter(penalizer=param["penalty"])
 
-        model.fit(whole_df,
-                  duration_col="time",
-                  event_col="event")
+            model.fit(train_df,
+                      duration_col="time",
+                      event_col="event")
 
+            models.append(model)
 
         # Extract the model
-        self.model = model
+        self.model = models[0]
         self.fitted = True
 
     def predict(self, x_test, times):
@@ -214,30 +222,42 @@ model_dict = {"DSM Model": DSM_Wrapper,
               "Cox Regression Model": Cox_Regression_Wrapper}
 
 
-def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv") -> pd.DataFrame:
+def processing_data(path: str="C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv",
+                    time_from_admission=True) -> pd.DataFrame:
     """
     processed eICU data
     :param path: final_merged_dataset.csv path
+    :param time_from_admission: use time start from admission
     :return: processed eICU data frame
     """
-    eICU_data = pd.read_csv("C:\\Users\\lee39\\OneDrive\\Desktop\\final_merged_dataset.csv")
+    eICU_data = pd.read_csv(path)
     cleaned_df = eICU_data.copy()
 
     # drop ids
-    cleaned_df.drop(["patientunitstayid"], inplace=True, axis=1)
-    cleaned_df.drop(["hospitalid"], inplace=True, axis=1)
+    cleaned_df.drop(["patientunitstayid", "hospitalid"], inplace=True, axis=1)
 
     # change the name of time, event and treatment variables
 
-    cleaned_df.rename(columns={"unitdischargeoffset": "time",
-                               "unitdischargestatus": "event",
-                               "has_Vasopressor": "treatment",},
-                      inplace=True)
+    if time_from_admission:
+        time = cleaned_df["unitdischargeoffset"] - cleaned_df["hospitaladmitoffset"]
 
+    else:
+        time = cleaned_df["unitdischargeoffset"]
+
+    cleaned_df["time"] = time
+
+    cleaned_df = cleaned_df[cleaned_df["time"] > 0]
+
+    cleaned_df.drop(["unitdischargeoffset", "hospitaladmitoffset", "hospitaldischargeoffset"],
+                    inplace=True, axis=1)
+
+    cleaned_df.rename(columns={"unitdischargestatus": "event",
+                               "has_Vasopressor": "treatment"},
+                      inplace=True)
 
     cleaned_df["event"] = (cleaned_df['event'] == 'Expired').astype(int)
 
-    return cleaned_df
+    return cleaned_df.reset_index(drop=True)
 
 
 def clustering_data(df: pd.DataFrame,
@@ -276,7 +296,9 @@ def processing_data_2_DCM(df: pd.DataFrame,
                           random_seed=42,
                           clustering=False,
                           n_clusters: int=1,
-                          clustering_features: list=None):
+                          clustering_features: list=None,
+                          preprocessor_provided=None,
+                          ):
     """
     further processed the data to meet the requirements of DCM
     :param df: processed eICU data frame
@@ -286,32 +308,33 @@ def processing_data_2_DCM(df: pd.DataFrame,
     :param clustering: clustering index, default not to clustering
     :param: n_clusters: number of clusters
     :param clustering_features: features used to cluster
+    :return: preprocessor_provided: provided preprocessor
     :return:
     """
-
-    treatment = df["treatment"]
     time = df["time"]
     event = df["event"]
     outcomes = pd.concat([time, event], axis=1)
     features = df.drop(["time", "event"], axis=1)  # include the treatment
-    numerical_features_list = list(features.columns.drop(categorical_features_list + ["treatment"]))
+    numerical_features_list = list(features.columns.drop(categorical_features_list))
 
     # process data for DCM
-    processed_features = Preprocessor().fit_transform(features,
-                                            cat_feats=categorical_features_list + ["treatment"],
-                                            num_feats=numerical_features_list)
+    if preprocessor_provided is None:
+        processed_features = Preprocessor().fit_transform(features,
+                                                cat_feats=categorical_features_list,
+                                                num_feats=numerical_features_list)
+    else:
+        processed_features = preprocessor_provided.fit_transform(features)
 
 
     # train test and val split
-    original_indices = np.arange(len(features))
-    X_train, X_val_test, y_train, y_val_test, idx_train, idx_val_test = train_test_split(
-        processed_features, outcomes, original_indices,
+    X_train, X_val_test, y_train, y_val_test = train_test_split(
+        processed_features, outcomes,
         test_size=1 - train_test_val_size[0],
         random_state=random_seed
     )
 
-    X_val, X_test, y_val, y_test, idx_val, idx_test = train_test_split(
-        X_val_test, y_val_test, idx_val_test,
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_val_test, y_val_test,
         test_size=train_test_val_size[-2] / (train_test_val_size[-1] + train_test_val_size[-2]),
         random_state=random_seed
     )
@@ -335,6 +358,9 @@ def processing_data_2_DCM(df: pd.DataFrame,
             cluster_index = clustering_df["cluster index"]
 
             # add clustering index to the data
+            idx_train = X_train.index
+            idx_val = X_val.index
+            idx_test = X_test.index
             X_train = pd.concat([X_train, cluster_index[idx_train]], axis=1)
             X_val = pd.concat([X_val, cluster_index[idx_val]], axis=1)
             X_test = pd.concat([X_test, cluster_index[idx_test]], axis=1)
@@ -392,6 +418,8 @@ def plot_avg_survival_curve(df: pd.DataFrame,
                             treatment: str,
                             figsize: tuple=(10, 10),
                             num_time: int = 100,
+                            save_figure: bool = False,
+                            save_name: str = None,
                             ):
     """
     plot the average survival curve for the selected model based on the group
@@ -402,6 +430,8 @@ def plot_avg_survival_curve(df: pd.DataFrame,
     :param treatment: name of the treatment column
     :param figsize: default size of the figure
     :param num_time: number of the time points in the plot
+    :param save_figure: whether to save the figure
+    :param save_name: name of the saved figure
     :return: the estimated causal effect for three groups
     """
     # get the number of groups
@@ -421,14 +451,17 @@ def plot_avg_survival_curve(df: pd.DataFrame,
         # Compute AUC via trapezoidal rule
         time_grid = list(np.linspace(0, np.max(df_group["time"]), num_time))
 
-        X_treated = df_treated[covariates + [treatment]]
-        X_control = df_untreated[covariates + [treatment]]
+        X_treated = df_treated[covariates]
+        X_control = df_untreated[covariates]
 
         S1, _  = model_wrapper.predict(X_treated, time_grid)
         S0, _ = model_wrapper.predict(X_control, time_grid)
 
         S1_avg = np.mean(S1, axis=0)
         S0_avg = np.mean(S0, axis=0)
+
+        S1_avg[S1_avg >= 1] = 1
+        S0_avg[S0_avg >= 1] = 1
 
         plt.subplot(num_group, 1, i + 1)
 
@@ -454,6 +487,13 @@ def plot_avg_survival_curve(df: pd.DataFrame,
     plt.subplots_adjust(wspace=0.5, hspace=2)
     plt.tight_layout()
     plt.legend()
+
+    if save_figure:
+        if save_name is None:
+            warnings.warn("No save_name provided")
+            save_name = f"survival_curve_{num_time}.png"
+        plt.savefig(save_name)
+
     plt.show()
 
     return causal_effects
@@ -461,15 +501,15 @@ def plot_avg_survival_curve(df: pd.DataFrame,
 
 def clustering_fit_model(model_name: str,
                          params_grid,
-                         train_set: pd.DataFrame,
-                         val_set: pd.DataFrame,
+                         train_set: list,
+                         val_set: list,
                          ):
     """
     Fit the models based one different clusters
     :param model_name: the name of the model
     :param params_grid: parameters grid for model
-    :param train_set: training data
-    :param val_set: validation data
+    :param train_set: list of training data
+    :param val_set: list of validation data
     :return: list of model wrappers
     """
     if model_name not in model_dict.keys():

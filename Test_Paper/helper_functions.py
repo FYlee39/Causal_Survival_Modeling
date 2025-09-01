@@ -167,10 +167,15 @@ class DCM_Wrapper(Model_Wrapper):
         models = []
         for param in ParameterGrid(self.params_grid):
             model = DeepCoxMixtures(k=param["k"],
-                                    layers=param["layers"])
+                                    layers=param["layers"],
+                                    gamma=param["gamma"],
+                                    smoothing_factor=param["smoothing_factor"],
+                                    use_activation=param["use_activation"])
             model.fit(x_train, t_train, e_train,
                       iters=param["iters"],
-                      learning_rate=param["learning_rate"]
+                      learning_rate=param["learning_rate"],
+                      batch_size=param["batch_size"],
+                      optimizer=param["optimizer"],
                       )
             breslow_splines = model.torch_model[1]
             val_result = test_step(model.torch_model[0], x_val_tensor, t_val_tensor, e_val_tensor, breslow_splines)
@@ -178,8 +183,14 @@ class DCM_Wrapper(Model_Wrapper):
 
         best_model = min(models)
         self.model = best_model[0][1]
+        self.loss = best_model[0][0]
         self.fitted = True
 
+    def get_loss(self):
+        """
+        Return the validation loss of the model
+        """
+        return self.loss
 
 class Cox_Regression_Wrapper(Model_Wrapper):
     """A wrapper for Cox regression model"""
